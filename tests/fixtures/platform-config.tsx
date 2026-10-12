@@ -4,9 +4,17 @@ import { useSchematicViewerController } from "@tscircuit/schematic-viewer"
 import { JSDOM } from "jsdom"
 import { act } from "react"
 import { createRoot } from "react-dom/client"
+import type { RunFrameWithApiProps } from "../../lib/components/RunFrameWithApi/RunFrameWithApi"
 
 const createWorker = mock(async (_options: unknown) => ({}))
 const previewConfigs: (PlatformConfig | undefined)[] = []
+const cliConfigs: RunFrameWithApiProps[] = []
+mock.module("lib/components/RunFrameWithApi/RunFrameWithApi", () => ({
+  RunFrameWithApi: (props: RunFrameWithApiProps) => {
+    cliConfigs.push(props)
+    return null
+  },
+}))
 mock.module("@tscircuit/eval/worker", () => ({
   createCircuitWebWorker: createWorker,
 }))
@@ -34,6 +42,7 @@ test("shared circuit hooks reach the evaluator and schematic viewer unchanged", 
     url: "http://localhost",
     pretendToBeVisual: true,
   })
+  ;(dom.window as any).TSCIRCUIT_ALLOW_SELECTING_EVAL_VERSION = false
   const globals = [
     "window",
     "document",
@@ -54,7 +63,9 @@ test("shared circuit hooks reach the evaluator and schematic viewer unchanged", 
   )
   const previousFetch = globalThis.fetch
   const previousWorker = globalThis.runFrameWorker
-  const network = mock(async () => new Response('{"versions":[]}'))
+  const network = mock(async () => {
+    throw new Error("Pinned local runtime must not use global fetch")
+  })
   Object.assign(
     globalThis,
     Object.fromEntries(globals.map((key) => [key, (dom.window as any)[key]])),
@@ -121,6 +132,33 @@ test("shared circuit hooks reach the evaluator and schematic viewer unchanged", 
     ).not.toBeNull()
     expect(previewConfigs.at(-1)).toBe(platformConfig)
     expect(createWorker).toHaveBeenCalledTimes(1)
+
+    await act(async () => root.unmount())
+    root = createRoot(document.getElementById("root")!)
+    const { RunFrameForCli } = await import(
+      "../../lib/components/RunFrameForCli/RunFrameForCli"
+    )
+    await act(async () =>
+      root.render(
+        <RunFrameForCli
+          platformConfig={platformConfig}
+          cachedDatasheetImports
+          evalVersion="0.0.1595"
+          evalWebWorkerBlobUrl="/assets/eval-worker.js"
+        />,
+      ),
+    )
+    expect(cliConfigs.at(-1)).toMatchObject({
+      cachedDatasheetImports: true,
+      evalVersion: "0.0.1595",
+      evalWebWorkerBlobUrl: "/assets/eval-worker.js",
+      forceLatestEvalVersion: false,
+      shouldLoadLatestEval: false,
+    })
+    expect(cliConfigs.at(-1)?.platformConfig?.platformFetch).toBe(
+      platformConfig.platformFetch,
+    )
+    expect(network).not.toHaveBeenCalled()
   } finally {
     await act(async () => root.unmount())
     globalThis.fetch = previousFetch
